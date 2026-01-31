@@ -63,6 +63,8 @@ def load_embeddings():
         print(f"✅ Loaded {len(texts)} chunks from disk.")
     else:
         print("⚠️ No saved embeddings found. Run embed_chunks() first.")
+        all_files = load_embeddings("data")
+        embed_chunks(all_files)
 
 def search(query, top_k=3):
     if len(texts) == 0:

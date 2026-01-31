@@ -264,7 +264,96 @@ st.markdown("""
         .stButton>button:hover {
             background-color: #3a3b41;
         }
-        
+:root {
+    --accent: #6d7cff;
+    --bg-hover: #2a2c36;
+    --bg-selected: #1c1f2a;
+    --border-default: rgba(255,255,255,0.08);
+    --text-muted: #cfd2dc;
+    --text-active: #ffffff;
+}
+
+/* Hide radio title label */
+section[data-testid="stSidebar"] .stRadio > label {
+    display: none;
+}
+
+/* Radio group container */
+section[data-testid="stSidebar"] div[role="radiogroup"] {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* Hide native radio input */
+section[data-testid="stSidebar"]
+div[role="radiogroup"] input[type="radio"] {
+    display: none;
+}
+
+/* Chat card (label is the card) */
+section[data-testid="stSidebar"] div[role="radiogroup"] > label {
+    display: flex;
+    align-items: center;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 2px solid var(--border-default);
+    background-color: transparent;
+    cursor: pointer;
+    transition:
+        background-color 0.15s ease,
+        border-color 0.15s ease;
+    position: relative;
+    width: 100%;
+}
+
+/* Left status dot */
+section[data-testid="stSidebar"]
+div[role="radiogroup"] > label::before {
+    content: "";
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background-color: var(--dot-inactive);
+    margin-right: 12px;
+    flex-shrink: 0;
+}
+
+/* Chat text */
+section[data-testid="stSidebar"]
+div[role="radiogroup"] > label > div {
+    color: var(--text-muted);
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Hover */
+section[data-testid="stSidebar"]
+div[role="radiogroup"] > label:hover {
+    background-color: var(--bg-hover);
+}
+
+/* Selected card */
+section[data-testid="stSidebar"]
+div[role="radiogroup"] > label:has(input:checked) {
+    background-color: var(--bg-selected);
+    border-color: var(--border-selected);
+}
+
+/* Selected text */
+section[data-testid="stSidebar"]
+div[role="radiogroup"] > label:has(input:checked) > div {
+    color: var(--text-active);
+    font-weight: 500;
+}
+
+/* Selected dot */
+section[data-testid="stSidebar"]
+div[role="radiogroup"] > label:has(input:checked)::before {
+    background-color: var(--dot-active);
+}       
     </style>
 """, unsafe_allow_html=True)
 
@@ -302,6 +391,9 @@ if "chat_file" not in st.session_state:
 if "last_query" not in st.session_state:
     st.session_state.last_query = None
 
+if "creating_new_chat" not in st.session_state:
+    st.session_state.creating_new_chat = False
+
 # ------------------------------
 # 💬 Display chat messages
 # ------------------------------
@@ -311,36 +403,41 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 with st.sidebar:
-    st.title("💬 Chats")
-
-    if st.button("➕ New Chat"):
-        st.session_state.messages = new_chat()
-        st.session_state.chat_file = None
-        st.rerun()
-
-    st.divider()
+    st.markdown("### Your chats")
 
     chat_files = sorted(os.listdir(CHAT_DIR), reverse=True)
+    chat_names = [c.replace(".json", "") for c in chat_files]
 
-    for chat in chat_files:
-        chat_path = f"{CHAT_DIR}/{chat}"
-        is_active = st.session_state.chat_file == chat_path
-        css_class = "chat-item active" if is_active else "chat-item"
-        if st.button(chat.replace(".json", "")):
-            st.session_state.messages = load_chat(f"{CHAT_DIR}/{chat}")
-            st.session_state.chat_file = f"{CHAT_DIR}/{chat}"
-            st.session_state.last_query = None
-            st.rerun()
+    if st.button("➕ New chat"):
+        st.session_state.messages = new_chat()
+        st.session_state.chat_file = None
+        st.session_state.last_query = None
+        st.session_state.creating_new_chat = True
+        st.rerun()
 
-    # chat_files = sorted(os.listdir(CHAT_DIR), reverse=True)
-    #
-    # for chat in chat_files:
-    #     if st.button(chat.replace(".json", "")):
-    #         st.session_state.messages = load_chat(f"{CHAT_DIR}/{chat}")
-    #         st.session_state.chat_file = f"{CHAT_DIR}/{chat}"
-    #         st.rerun()
+    if chat_files:
+        if st.session_state.chat_file and not st.session_state.creating_new_chat:
+            current = os.path.basename(st.session_state.chat_file).replace(".json", "")
+            index = chat_names.index(current)
+        else:
+            index = None  # allow no selection
 
+        selected = st.radio(
+            label="",
+            options=chat_names,
+            index=index,
+            key="chat_selector",
+        )
 
+        if selected:
+            selected_file = f"{CHAT_DIR}/{selected}.json"
+
+            if st.session_state.chat_file != selected_file:
+                st.session_state.messages = load_chat(selected_file)
+                st.session_state.chat_file = selected_file
+                st.session_state.creating_new_chat = False
+                st.session_state.last_query = None
+                st.rerun()
 # ------------------------------
 # ✏️ Input area (form-based to prevent re-runs)
 # ------------------------------
@@ -357,6 +454,8 @@ if user_input and user_input != st.session_state.last_query:
     st.session_state.messages.append(
         {"role": "user", "content": user_input}
     )
+    st.session_state.creating_new_chat = False
+
     with st.chat_message("user"):
         st.markdown(user_input)
 
@@ -438,11 +537,11 @@ If the answer is not found in the context, say:
 # ------------------------------
 # 🗑️ Optional: Clear chat button
 # ------------------------------
-col1, col2, _ = st.columns([3, 1, 4])
-with col1:
-    if st.button("🗑️ Clear Chat"):
-        st.session_state.messages = new_chat()
-        st.session_state.chat_file = None
-        st.session_state.last_query = None
-        st.rerun()
+# col1, col2, _ = st.columns([3, 1, 4])
+# with col1:
+#     if st.button("🗑️ Clear Chat"):
+#         st.session_state.messages = new_chat()
+#         st.session_state.chat_file = None
+#         st.session_state.last_query = None
+#         st.rerun()
 
