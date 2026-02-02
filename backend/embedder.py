@@ -1,85 +1,117 @@
-from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
 import os
-import pickle
+from typing import List, Tuple
+
+import faiss
+from llama_index.core import (
+    VectorStoreIndex,
+    StorageContext,
+    load_index_from_storage,
+    Document,
+)
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.vector_stores.faiss import FaissVectorStore
 
 from backend.file_loader import load_all_files
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
-index = faiss.IndexFlatL2(384)
-texts = []
-sources = []
+# --------------------
+# Configuration
+# --------------------
 
-INDEX_FILE = "vector.index"
-META_FILE = "meta.pkl"
+PERSIST_DIR = "vector_store"
 
-def embed_chunks(all_pdf_texts, chunk_size=500, overlap=100):
-    global texts, sources, index
+EMBED_MODEL = HuggingFaceEmbedding(
+    model_name="all-MiniLM-L6-v2",  # keep same model for now
+    normalize=True
+)
 
-    for filename, full_text in all_pdf_texts:
-        if not full_text.strip():
+NODE_PARSER = SentenceSplitter(
+    chunk_size=512,
+    chunk_overlap=80,
+)
+
+# --------------------
+# Index build / load
+# --------------------
+
+def build_or_load_index(data_dir: str = "data") -> VectorStoreIndex:
+    """
+    Build the vector index once, then load it on subsequent runs.
+    """
+    if os.path.exists(PERSIST_DIR):
+        storage_context = StorageContext.from_defaults(
+            persist_dir=PERSIST_DIR
+        )
+        index = load_index_from_storage(
+            storage_context,
+            embed_model=EMBED_MODEL,
+        )
+        print("✅ Loaded existing LlamaIndex")
+        return index
+
+    print("📄 Loading files...")
+    files = load_all_files(data_dir)
+
+    documents: List[Document] = []
+    for filename, text in files:
+        if not text.strip():
             continue
 
-        # --- improved chunking with overlap ---
-        chunks = []
-        start = 0
-        text_length = len(full_text)
-
-        while start < text_length:
-            end = start + chunk_size
-            chunk = full_text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            start = end - overlap
-
-        if not chunks:
-            continue
-
-        # --- normalized embeddings (important) ---
-        embeddings = model.encode(
-            chunks,
-            normalize_embeddings=True
+        documents.append(
+            Document(
+                text=text,
+                metadata={"source": filename},
+            )
         )
 
-        index.add(np.array(embeddings, dtype="float32"))
-        texts.extend(chunks)
-        sources.extend([filename] * len(chunks))
+    print(f"📦 Loaded {len(documents)} documents")
 
-    print(f"✅ Embedded {len(texts)} chunks total")
+    DIMENSION = 384  # all-MiniLM-L6-v2
+    faiss_index = faiss.IndexFlatIP(DIMENSION)
 
-    # Save index + metadata for reuse (optional)
-    faiss.write_index(index, INDEX_FILE)
-    with open(META_FILE, "wb") as f:
-        pickle.dump({"texts": texts, "sources": sources}, f)
+    vector_store = FaissVectorStore(faiss_index)
+    storage_context = StorageContext.from_defaults(
+        vector_store=vector_store
+    )
 
-def load_embeddings():
-    """Reload previously saved embeddings (to avoid re-embedding every run)."""
-    global texts, sources, index
-    if os.path.exists(INDEX_FILE) and os.path.exists(META_FILE):
-        index = faiss.read_index(INDEX_FILE)
-        with open(META_FILE, "rb") as f:
-            meta = pickle.load(f)
-        texts = meta["texts"]
-        sources = meta["sources"]
-        print(f"✅ Loaded {len(texts)} chunks from disk.")
-    else:
-        print("⚠️ No saved embeddings found. Run embed_chunks() first.")
-        all_files = load_all_files("data")
-        embed_chunks(all_files)
+    index = VectorStoreIndex.from_documents(
+        documents,
+        embed_model=EMBED_MODEL,
+        storage_context=storage_context,
+        transformations=[NODE_PARSER],
+    )
 
-def search(query, top_k=3):
-    if len(texts) == 0:
-        print("⚠️ No texts embedded — call embed_chunks() first.")
-        return []
+    index.storage_context.persist(PERSIST_DIR)
+    print("✅ Index built and persisted")
 
-    query_emb = model.encode([query])
-    D, I = index.search(np.array(query_emb), top_k)
+    return index
+
+# --------------------
+# Search (drop-in replacement)
+# --------------------
+
+_index: VectorStoreIndex | None = None
+
+def search(query: str, top_k: int = 6) -> List[Tuple[str, str]]:
+    """
+    Drop-in replacement for your old `search()` function.
+    Returns: [(chunk_text, source_file), ...]
+    """
+    global _index
+
+    if _index is None:
+        _index = build_or_load_index()
+
+    query_engine = _index.as_retriever(
+        similarity_top_k=top_k
+    )
+
+    nodes = query_engine.retrieve(query)
 
     results = []
-    for idx in I[0]:
-        if 0 <= idx < len(texts):
-            results.append((texts[idx], sources[idx]))
-        else:
-            print(f"⚠️ Skipping invalid index {idx}")
+    for node in nodes:
+        text = node.node.text
+        source = node.node.metadata.get("source", "unknown")
+        results.append((text, source))
+
     return results
