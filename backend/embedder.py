@@ -4,6 +4,8 @@ import numpy as np
 import os
 import pickle
 
+from backend.file_loader import load_all_files
+
 model = SentenceTransformer("all-MiniLM-L6-v2")
 index = faiss.IndexFlatL2(384)
 texts = []
@@ -63,7 +65,7 @@ def load_embeddings():
         print(f"✅ Loaded {len(texts)} chunks from disk.")
     else:
         print("⚠️ No saved embeddings found. Run embed_chunks() first.")
-        all_files = load_embeddings("data")
+        all_files = load_all_files("data")
         embed_chunks(all_files)
 
 def search(query, top_k=3):
